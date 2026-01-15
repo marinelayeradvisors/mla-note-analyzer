@@ -3,7 +3,6 @@ import { z } from "zod";
 import { parsePortfolioFromXlsx } from "@/lib/portfolio";
 import { parseMarketSnapshotFromXlsx } from "@/lib/pricing";
 import { scoreNote } from "@/lib/scoring";
-import { toStr } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
@@ -47,34 +46,36 @@ export async function POST(req: NextRequest) {
 
         m2m: n.m2m,
         couponPa: n.couponPa,
+        intrinsic: n.intrinsic,
         marketCouponPa: scored.marketCouponPa,
 
         principalCushionPct: scored.principalCushionPct,
         couponCushionPct: scored.couponCushionPct,
 
-        attractivenessScore: scored.attractivenessScore,
-        swapScore: scored.swapScore,
-
-        action: scored.action,
-        why: scored.why,
-        breakdown: scored.breakdown,
+        // New simplified swap fields
+        swapRecommendation: scored.swapRecommendation,
+        swapReason: scored.swapReason,
+        swapDetails: scored.swapDetails,
+        isNearBarrier: scored.isNearBarrier,
       };
     });
 
-    // Sort: strongest actions first
-    const actionRank: Record<string, number> = {
-      "Consider swap": 1,
-      "Keep (attractive)": 2,
-      "Risk watch": 0,
-      "Monitor": 3,
-    };
+    // Sort: REVIEW (yes) first, then HOLD (no), then N/A, with risk warnings at top
     results.sort((a, b) => {
-      const ra = actionRank[a.action] ?? 9;
-      const rb = actionRank[b.action] ?? 9;
+      // Risk warnings first
+      if (a.isNearBarrier && !b.isNearBarrier) return -1;
+      if (!a.isNearBarrier && b.isNearBarrier) return 1;
+
+      // Then by swap recommendation: yes > no > na
+      const recRank: Record<string, number> = { yes: 0, no: 1, na: 2 };
+      const ra = recRank[a.swapRecommendation] ?? 9;
+      const rb = recRank[b.swapRecommendation] ?? 9;
       if (ra !== rb) return ra - rb;
-      const sa = (b.swapScore ?? 0) - (a.swapScore ?? 0);
-      if (sa !== 0) return sa;
-      return (b.attractivenessScore ?? 0) - (a.attractivenessScore ?? 0);
+
+      // Within same recommendation, sort by net benefit (for income) or cushion (for growth)
+      const benefitA = a.swapDetails.netBenefitPts ?? 0;
+      const benefitB = b.swapDetails.netBenefitPts ?? 0;
+      return benefitB - benefitA;
     });
 
     const asOf = snap?.asOf ?? null;
