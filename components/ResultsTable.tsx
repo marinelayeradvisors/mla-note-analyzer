@@ -118,8 +118,12 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
               <th className="px-3 py-3">Coupon</th>
               <th className="px-3 py-3">Market Coupon</th>
               <th className="px-3 py-3">Principal Cushion</th>
-              <th className="px-3 py-3">Attractiveness</th>
-              <th className="px-3 py-3">Swap</th>
+              <th className="px-3 py-3" title="High = HOLD. Your note has better terms than current market.">
+                <span className="border-b border-dashed border-slate-400 cursor-help">Attractiveness</span>
+              </th>
+              <th className="px-3 py-3" title="High = CONSIDER SELLING. Current market offers better terms.">
+                <span className="border-b border-dashed border-slate-400 cursor-help">Swap</span>
+              </th>
               <th className="px-3 py-3">Action</th>
             </tr>
           </thead>
@@ -158,38 +162,37 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
         </table>
       </div>
 
-      <details className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
-        <summary className="cursor-pointer text-sm font-medium">Understanding the Scores</summary>
-        <div className="mt-3 space-y-4 text-sm text-slate-700">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-              <h4 className="font-semibold text-emerald-900">Attractiveness Score</h4>
-              <p className="mt-1 text-emerald-800">
-                <strong>High score = HOLD</strong> — Your note has better terms than what&apos;s available in the market today.
-              </p>
-              <ul className="mt-2 space-y-1 text-xs text-emerald-700">
-                <li>• Compares your coupon rate vs. current market rate</li>
-                <li>• Considers distance to principal barrier (cushion)</li>
-                <li>• Example: You locked in 15% when market now pays 10% = very attractive</li>
-              </ul>
-            </div>
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-              <h4 className="font-semibold text-amber-900">Swap Score</h4>
-              <p className="mt-1 text-amber-800">
-                <strong>High score = CONSIDER SELLING</strong> — The market now offers better terms than your note.
-              </p>
-              <ul className="mt-2 space-y-1 text-xs text-amber-700">
-                <li>• Calculates if you&apos;d benefit from switching to a new note</li>
-                <li>• Accounts for transaction costs (friction)</li>
-                <li>• Example: Your note pays 8% but market now pays 12% = high swap score</li>
-              </ul>
-            </div>
+      {/* Score Explanation - Always visible */}
+      <div className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
+        <h3 className="text-sm font-semibold mb-3">Understanding the Scores</h3>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+            <h4 className="font-semibold text-emerald-900">Attractiveness Score</h4>
+            <p className="mt-1 text-emerald-800">
+              <strong>High score = HOLD</strong> — Your note has better terms than what&apos;s available in the market today.
+            </p>
+            <ul className="mt-2 space-y-1 text-xs text-emerald-700">
+              <li>• Compares your coupon rate vs. current market rate</li>
+              <li>• Considers distance to principal barrier (cushion)</li>
+              <li>• Example: You locked in 15% when market now pays 10% = very attractive</li>
+            </ul>
           </div>
-          <p className="text-xs text-slate-500">
-            <strong>Tip:</strong> Click any row to see a detailed breakdown of how the scores were calculated for that specific note.
-          </p>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <h4 className="font-semibold text-amber-900">Swap Score</h4>
+            <p className="mt-1 text-amber-800">
+              <strong>High score = CONSIDER SELLING</strong> — The market now offers better terms than your note.
+            </p>
+            <ul className="mt-2 space-y-1 text-xs text-amber-700">
+              <li>• Calculates if you&apos;d benefit from switching to a new note</li>
+              <li>• Accounts for transaction costs (friction)</li>
+              <li>• Example: Your note pays 8% but market now pays 12% = high swap score</li>
+            </ul>
+          </div>
         </div>
-      </details>
+        <p className="mt-3 text-xs text-slate-500">
+          <strong>Tip:</strong> Click any row to see a detailed breakdown of how the scores were calculated for that specific note.
+        </p>
+      </div>
 
       {selectedNote && (
         <NoteDetailModal note={selectedNote} onClose={() => setSelectedNote(null)} />
