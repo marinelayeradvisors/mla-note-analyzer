@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
 
         action: scored.action,
         why: scored.why,
+        breakdown: scored.breakdown,
       };
     });
 

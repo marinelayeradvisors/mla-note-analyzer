@@ -2,6 +2,27 @@
 
 import { useMemo, useState } from "react";
 import { ScorePill } from "./ScorePill";
+import { NoteDetailModal } from "./NoteDetailModal";
+
+export type ScoreBreakdown = {
+  // Attractiveness components
+  couponEdge: number | null;
+  couponEdgeScore: number | null;
+  principalCushionScore: number | null;
+  richnessScore: number | null;
+
+  // Swap components
+  netBenefitPts: number | null;
+  netBenefitScore: number | null;
+  m2mScore: number | null;
+  annualBenefit: number | null;
+  unwindCost: number | null;
+  horizonMonths: number | null;
+
+  // Context
+  hasMarketMatch: boolean;
+  frictionPointsUsed: number;
+};
 
 export type NoteResult = {
   id: string;
@@ -24,6 +45,7 @@ export type NoteResult = {
 
   action: string;
   why: string;
+  breakdown: ScoreBreakdown;
 };
 
 function fmtPct(x: number | null, digits = 1) {
@@ -45,6 +67,7 @@ function fmtM2M(x: number | null) {
 
 export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; asOfLabel: string | null }) {
   const [q, setQ] = useState("");
+  const [selectedNote, setSelectedNote] = useState<NoteResult | null>(null);
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -102,7 +125,11 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
           </thead>
           <tbody>
             {filtered.map((r) => (
-              <tr key={r.id} className="border-b last:border-b-0 hover:bg-slate-50/50">
+              <tr
+                key={r.id}
+                className="border-b last:border-b-0 hover:bg-slate-50/50 cursor-pointer"
+                onClick={() => setSelectedNote(r)}
+              >
                 <td className="px-3 py-3 whitespace-nowrap">{r.issuer ?? "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-xs">{r.cusip ?? "—"}</td>
                 <td className="px-3 py-3">{r.returnType}</td>
@@ -132,19 +159,41 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
       </div>
 
       <details className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
-        <summary className="cursor-pointer text-sm font-medium">Scoring notes (quick)</summary>
-        <div className="mt-2 space-y-2 text-sm text-slate-700">
-          <p>
-            <span className="font-medium">Attractiveness</span>: favor notes whose terms look better than the
-            current market (when a match exists), and with more distance to the principal barrier.
-          </p>
-          <p>
-            <span className="font-medium">Swap</span>: favor notes where current market terms are materially
-            better, the note is near par (lower unwind pain), and cushion is reasonable. A default transaction
-            friction of 1 point is applied.
+        <summary className="cursor-pointer text-sm font-medium">Understanding the Scores</summary>
+        <div className="mt-3 space-y-4 text-sm text-slate-700">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <h4 className="font-semibold text-emerald-900">Attractiveness Score</h4>
+              <p className="mt-1 text-emerald-800">
+                <strong>High score = HOLD</strong> — Your note has better terms than what&apos;s available in the market today.
+              </p>
+              <ul className="mt-2 space-y-1 text-xs text-emerald-700">
+                <li>• Compares your coupon rate vs. current market rate</li>
+                <li>• Considers distance to principal barrier (cushion)</li>
+                <li>• Example: You locked in 15% when market now pays 10% = very attractive</li>
+              </ul>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <h4 className="font-semibold text-amber-900">Swap Score</h4>
+              <p className="mt-1 text-amber-800">
+                <strong>High score = CONSIDER SELLING</strong> — The market now offers better terms than your note.
+              </p>
+              <ul className="mt-2 space-y-1 text-xs text-amber-700">
+                <li>• Calculates if you&apos;d benefit from switching to a new note</li>
+                <li>• Accounts for transaction costs (friction)</li>
+                <li>• Example: Your note pays 8% but market now pays 12% = high swap score</li>
+              </ul>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500">
+            <strong>Tip:</strong> Click any row to see a detailed breakdown of how the scores were calculated for that specific note.
           </p>
         </div>
       </details>
+
+      {selectedNote && (
+        <NoteDetailModal note={selectedNote} onClose={() => setSelectedNote(null)} />
+      )}
     </div>
   );
 }

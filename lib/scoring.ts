@@ -3,6 +3,26 @@ import type { MarketSnapshot } from "./pricing";
 import type { NormalizedNote } from "./portfolio";
 import { canonicalBasketKey, computeNoCallMonths, computeOriginalTenorMonths } from "./portfolio";
 
+export type ScoreBreakdown = {
+  // Attractiveness components
+  couponEdge: number | null; // (noteCoupon - marketCoupon) / marketCoupon
+  couponEdgeScore: number | null; // 0-100
+  principalCushionScore: number | null; // 0-100
+  richnessScore: number | null; // 0-100 (fallback only)
+
+  // Swap components
+  netBenefitPts: number | null; // price points
+  netBenefitScore: number | null; // 0-100
+  m2mScore: number | null; // 0-100
+  annualBenefit: number | null; // decimal (marketCoupon - noteCoupon)
+  unwindCost: number | null; // price points
+  horizonMonths: number | null;
+
+  // Context
+  hasMarketMatch: boolean;
+  frictionPointsUsed: number;
+};
+
 export type ScoreResult = {
   attractivenessScore: number | null; // 0-100
   swapScore: number | null; // 0-100
@@ -11,6 +31,7 @@ export type ScoreResult = {
   couponCushionPct: number | null;
   action: string;
   why: string;
+  breakdown: ScoreBreakdown;
 };
 
 function cushionPct(spot: number | null, barrier: number | null): number | null {
@@ -76,7 +97,7 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
   const principalCush = cushionPct(note.activeUnderlierSpot, note.activeUnderlierPrincipalBarrier);
   const couponCush = cushionPct(note.activeUnderlierSpot, note.activeUnderlierCouponBarrier);
   const pcScore = cushionScore0to100(principalCush);
-  const m2mScore = m2mScore0to100(note.m2m);
+  const m2mScoreVal = m2mScore0to100(note.m2m);
 
   const marketCouponPa = matchMarketCoupon(note, snap);
 
@@ -88,10 +109,30 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
   let attractivenessScore: number | null = null;
   let swapScore: number | null = null;
 
+  // Breakdown tracking
+  const breakdown: ScoreBreakdown = {
+    couponEdge: null,
+    couponEdgeScore: null,
+    principalCushionScore: pcScore,
+    richnessScore: null,
+    netBenefitPts: null,
+    netBenefitScore: null,
+    m2mScore: m2mScoreVal,
+    annualBenefit: null,
+    unwindCost: null,
+    horizonMonths: null,
+    hasMarketMatch: false,
+    frictionPointsUsed: frictionPoints,
+  };
+
   if (marketCouponPa !== null && note.couponPa !== null) {
+    breakdown.hasMarketMatch = true;
+
     // Attractiveness favors above-market coupons + cushion.
     const edge = (note.couponPa - marketCouponPa) / marketCouponPa;
     const edgeScore = couponEdgeScore0to100(edge);
+    breakdown.couponEdge = edge;
+    breakdown.couponEdgeScore = edgeScore;
     attractivenessScore = 0.70 * edgeScore + 0.30 * (pcScore ?? 50);
 
     // Swap favors below-market coupons, near par, and positive net benefit after friction.
@@ -102,15 +143,21 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
     const annualBenefit = marketCouponPa - note.couponPa; // decimal
     const netBenefitPts = annualBenefit * (horizonMonths / 12) - unwindCost;
 
-    const netScore = netBenefitScore0to100(netBenefitPts);
-    swapScore = 0.65 * netScore + 0.20 * (m2mScore ?? 50) + 0.15 * (pcScore ?? 50);
+    breakdown.horizonMonths = horizonMonths;
+    breakdown.unwindCost = unwindCost;
+    breakdown.annualBenefit = annualBenefit;
+    breakdown.netBenefitPts = netBenefitPts;
+    breakdown.netBenefitScore = netBenefitScore0to100(netBenefitPts);
+
+    swapScore = 0.65 * breakdown.netBenefitScore + 0.20 * (m2mScoreVal ?? 50) + 0.15 * (pcScore ?? 50);
   } else {
     // Fallback heuristic scores if no market match (works for growth notes too):
     // Use termRichness sign and cushion.
     const richnessScore = clamp(50 + termRichness * 60, 0, 100);
+    breakdown.richnessScore = richnessScore;
     attractivenessScore = 0.60 * richnessScore + 0.40 * (pcScore ?? 50);
 
-    const upgradeScore = 0.50 * (100 - richnessScore) + 0.30 * (m2mScore ?? 50) + 0.20 * (pcScore ?? 50);
+    const upgradeScore = 0.50 * (100 - richnessScore) + 0.30 * (m2mScoreVal ?? 50) + 0.20 * (pcScore ?? 50);
     swapScore = upgradeScore;
   }
 
@@ -124,17 +171,23 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
 
   if (nearBarrier) {
     action = "Risk watch";
-    why = `Principal cushion is low (${principalCush!.toFixed(1)}%).`;
+    why = `Principal cushion is low (${principalCush!.toFixed(1)}%). The underlier is close to the barrier.`;
   } else if (strongSwap) {
     action = "Consider swap";
-    why = marketCouponPa !== null && note.couponPa !== null
-      ? `Current market looks better vs existing terms after ~${frictionPoints.toFixed(1)}pt friction (heuristic).`
-      : "Swap score high vs peers (heuristic).";
+    if (breakdown.hasMarketMatch && breakdown.annualBenefit !== null) {
+      const benefitBps = Math.round(breakdown.annualBenefit * 10000);
+      why = `Market now pays ~${benefitBps > 0 ? "+" : ""}${benefitBps}bps more annually. After ${frictionPoints.toFixed(1)}pt friction, swapping may improve returns over ${breakdown.horizonMonths}mo horizon.`;
+    } else {
+      why = "Based on relative valuation, this note appears to offer below-average value vs. peers.";
+    }
   } else if (veryAttractive) {
     action = "Keep (attractive)";
-    why = marketCouponPa !== null && note.couponPa !== null
-      ? "Existing terms look strong vs current market for a comparable template."
-      : "Existing terms look strong vs peers (proxy).";
+    if (breakdown.hasMarketMatch && breakdown.couponEdge !== null) {
+      const edgeBps = Math.round(breakdown.couponEdge * 10000);
+      why = `Your coupon is ${edgeBps > 0 ? "+" : ""}${edgeBps}bps vs. current market. These terms are better than what you'd get today.`;
+    } else {
+      why = "Based on relative valuation, this note appears to offer above-average value vs. peers.";
+    }
   }
 
   return {
@@ -145,5 +198,6 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
     couponCushionPct: couponCush,
     action,
     why,
+    breakdown,
   };
 }
