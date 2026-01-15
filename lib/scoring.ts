@@ -1,37 +1,39 @@
-import { clamp, sigmoid01 } from "./utils";
+import { clamp } from "./utils";
 import type { MarketSnapshot } from "./pricing";
 import type { NormalizedNote } from "./portfolio";
 import { canonicalBasketKey, computeNoCallMonths, computeOriginalTenorMonths } from "./portfolio";
 
-export type ScoreBreakdown = {
-  // Attractiveness components
-  couponEdge: number | null; // (noteCoupon - marketCoupon) / marketCoupon
-  couponEdgeScore: number | null; // 0-100
-  principalCushionScore: number | null; // 0-100
-  richnessScore: number | null; // 0-100 (fallback only)
-
-  // Swap components
-  netBenefitPts: number | null; // price points
-  netBenefitScore: number | null; // 0-100
-  m2mScore: number | null; // 0-100
-  annualBenefit: number | null; // decimal (marketCoupon - noteCoupon)
-  unwindCost: number | null; // price points
+export type SwapDetails = {
+  // For income notes
+  yourCoupon: number | null;
+  marketCoupon: number | null;
+  couponDiffBps: number | null;
+  estimatedSellPrice: number | null;
+  netBenefitPts: number | null;
   horizonMonths: number | null;
 
-  // Context
-  hasMarketMatch: boolean;
-  frictionPointsUsed: number;
+  // For growth notes
+  m2m: number | null;
+  intrinsic: number | null;
+  m2mVsIntrinsicPct: number | null; // (m2m - intrinsic) / intrinsic * 100
+
+  // Common
+  principalCushionPct: number | null;
+  frictionPoints: number;
 };
 
 export type ScoreResult = {
-  attractivenessScore: number | null; // 0-100
-  swapScore: number | null; // 0-100
-  marketCouponPa: number | null; // decimal
-  principalCushionPct: number | null; // percent of current, already *100
+  swapRecommendation: "yes" | "no" | "na";
+  swapReason: string;
+  swapDetails: SwapDetails;
+
+  // Keep these for display
+  marketCouponPa: number | null;
+  principalCushionPct: number | null;
   couponCushionPct: number | null;
-  action: string;
-  why: string;
-  breakdown: ScoreBreakdown;
+
+  // For risk flagging
+  isNearBarrier: boolean;
 };
 
 function cushionPct(spot: number | null, barrier: number | null): number | null {
@@ -39,165 +41,176 @@ function cushionPct(spot: number | null, barrier: number | null): number | null 
   return ((spot - barrier) / spot) * 100;
 }
 
-function cushionScore0to100(cushPct: number | null): number | null {
-  if (cushPct === null) return null;
-  // Clamp between -5% and +60% of spot
-  const x = clamp(cushPct, -5, 60);
-  return ((x - (-5)) / (60 - (-5))) * 100;
-}
-
-function m2mScore0to100(m2m: number | null): number | null {
-  if (m2m === null) return null;
-  // prefer near par for swap flexibility
-  const x = clamp(m2m, 0.90, 1.03);
-  return ((x - 0.90) / (1.03 - 0.90)) * 100;
-}
-
-function couponEdgeScore0to100(edge: number): number {
-  // edge = (noteCoupon - marketCoupon) / marketCoupon
-  // centered at 50 when edge=0, steepness tuned
-  const s = sigmoid01(edge * 10);
-  return s * 100;
-}
-
-function netBenefitScore0to100(netBenefitPts: number): number {
-  // netBenefitPts measured in "price points" (e.g. 0.01 = 1 point).
-  // map roughly: -2pts => 0, 0 => 35, +4pts => 100
-  const x = clamp(netBenefitPts, -0.02, 0.04);
-  return ((x - (-0.02)) / (0.04 - (-0.02))) * 100;
-}
-
-function matchMarketCoupon(note: NormalizedNote, snap: MarketSnapshot | null): number | null {
+/**
+ * Flexible market matching for income notes.
+ * Relaxed criteria: ±6 months tenor, ±5% barriers, any quarterly structure
+ */
+function findMarketCoupon(note: NormalizedNote, snap: MarketSnapshot | null): number | null {
   if (!snap) return null;
   if (note.returnType !== "Income") return null;
 
-  // Match the specific template implied by the provided snapshot:
-  // 36m tenor, 3m no-call, quarterly call/coupon, 70% coupon barrier / 70% principal barrier.
   const tenor = computeOriginalTenorMonths(note);
   const noCall = computeNoCallMonths(note);
   const callFreq = note.callObsFreq?.toLowerCase() ?? null;
-
   const cb = note.couponBarrierPct;
   const pb = note.principalBarrierPct;
 
-  const looksQuarterly = callFreq ? callFreq.includes("quarter") : false;
-  const tenorOk = tenor !== null ? Math.abs(tenor - 36) <= 3 : false;
-  const noCallOk = noCall !== null ? Math.abs(noCall - 3) <= 1.5 : false;
-  const couponBarrierOk = cb !== null ? Math.abs(cb - 0.70) <= 0.03 : false;
-  const principalBarrierOk = pb !== null ? Math.abs(pb - 0.70) <= 0.03 : false;
+  // Relaxed matching criteria
+  const looksQuarterly = callFreq ? (callFreq.includes("quarter") || callFreq.includes("3m")) : false;
+  const tenorOk = tenor !== null ? Math.abs(tenor - 36) <= 6 : false; // ±6 months (was ±3)
+  const noCallOk = noCall !== null ? Math.abs(noCall - 3) <= 3 : true; // ±3 months or missing is ok
+  const couponBarrierOk = cb !== null ? Math.abs(cb - 0.70) <= 0.05 : true; // ±5% (was ±3%)
+  const principalBarrierOk = pb !== null ? Math.abs(pb - 0.70) <= 0.05 : true; // ±5% (was ±3%)
 
-  if (!(tenorOk && noCallOk && looksQuarterly && couponBarrierOk && principalBarrierOk)) return null;
+  // Need at least tenor and quarterly to match
+  if (!(tenorOk && looksQuarterly)) return null;
 
+  // Prefer if barrier constraints also match
+  if (!(noCallOk && couponBarrierOk && principalBarrierOk)) return null;
+
+  // First try exact basket match
   const key = canonicalBasketKey(note);
-  const v = snap.basketCouponMap[key];
-  return typeof v === "number" ? v : null;
+  const exactMatch = snap.basketCouponMap[key];
+  if (typeof exactMatch === "number") return exactMatch;
+
+  // Fallback: use average of available coupons if no exact match
+  const coupons = Object.values(snap.basketCouponMap).filter((v): v is number => typeof v === "number");
+  if (coupons.length > 0) {
+    return coupons.reduce((a, b) => a + b, 0) / coupons.length;
+  }
+
+  return null;
 }
 
+/**
+ * Main scoring function - returns swap recommendation with clear reasoning
+ */
 export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, frictionPoints: number): ScoreResult {
   const principalCush = cushionPct(note.activeUnderlierSpot, note.activeUnderlierPrincipalBarrier);
   const couponCush = cushionPct(note.activeUnderlierSpot, note.activeUnderlierCouponBarrier);
-  const pcScore = cushionScore0to100(principalCush);
-  const m2mScoreVal = m2mScore0to100(note.m2m);
+  const isNearBarrier = principalCush !== null && principalCush < 10;
 
-  const marketCouponPa = matchMarketCoupon(note, snap);
-
-  // Default (fallback) attractiveness: proxy using m2m vs intrinsic
-  const termRichness = (note.m2m !== null && note.intrinsic !== null && note.m2m > 0 && note.intrinsic > 0)
-    ? Math.log(note.m2m / note.intrinsic)
-    : 0;
-
-  let attractivenessScore: number | null = null;
-  let swapScore: number | null = null;
-
-  // Breakdown tracking
-  const breakdown: ScoreBreakdown = {
-    couponEdge: null,
-    couponEdgeScore: null,
-    principalCushionScore: pcScore,
-    richnessScore: null,
+  // Initialize swap details
+  const swapDetails: SwapDetails = {
+    yourCoupon: note.couponPa,
+    marketCoupon: null,
+    couponDiffBps: null,
+    estimatedSellPrice: null,
     netBenefitPts: null,
-    netBenefitScore: null,
-    m2mScore: m2mScoreVal,
-    annualBenefit: null,
-    unwindCost: null,
     horizonMonths: null,
-    hasMarketMatch: false,
-    frictionPointsUsed: frictionPoints,
+    m2m: note.m2m,
+    intrinsic: note.intrinsic,
+    m2mVsIntrinsicPct: null,
+    principalCushionPct: principalCush,
+    frictionPoints,
   };
 
-  if (marketCouponPa !== null && note.couponPa !== null) {
-    breakdown.hasMarketMatch = true;
-
-    // Attractiveness favors above-market coupons + cushion.
-    const edge = (note.couponPa - marketCouponPa) / marketCouponPa;
-    const edgeScore = couponEdgeScore0to100(edge);
-    breakdown.couponEdge = edge;
-    breakdown.couponEdgeScore = edgeScore;
-    attractivenessScore = 0.70 * edgeScore + 0.30 * (pcScore ?? 50);
-
-    // Swap favors below-market coupons, near par, and positive net benefit after friction.
-    const remainingMonths = note.timeToMaturityMonths ?? 12;
-    const horizonMonths = Math.max(3, Math.min(12, remainingMonths)); // default 1y horizon, min 3m
-    const effectiveSell = (note.m2m ?? 1) - (frictionPoints / 100);
-    const unwindCost = 1 - effectiveSell; // in price points
-    const annualBenefit = marketCouponPa - note.couponPa; // decimal
-    const netBenefitPts = annualBenefit * (horizonMonths / 12) - unwindCost;
-
-    breakdown.horizonMonths = horizonMonths;
-    breakdown.unwindCost = unwindCost;
-    breakdown.annualBenefit = annualBenefit;
-    breakdown.netBenefitPts = netBenefitPts;
-    breakdown.netBenefitScore = netBenefitScore0to100(netBenefitPts);
-
-    swapScore = 0.65 * breakdown.netBenefitScore + 0.20 * (m2mScoreVal ?? 50) + 0.15 * (pcScore ?? 50);
-  } else {
-    // Fallback heuristic scores if no market match (works for growth notes too):
-    // Use termRichness sign and cushion.
-    const richnessScore = clamp(50 + termRichness * 60, 0, 100);
-    breakdown.richnessScore = richnessScore;
-    attractivenessScore = 0.60 * richnessScore + 0.40 * (pcScore ?? 50);
-
-    const upgradeScore = 0.50 * (100 - richnessScore) + 0.30 * (m2mScoreVal ?? 50) + 0.20 * (pcScore ?? 50);
-    swapScore = upgradeScore;
+  // Calculate M2M vs Intrinsic spread (useful for both income and growth)
+  if (note.m2m !== null && note.intrinsic !== null && note.intrinsic > 0) {
+    swapDetails.m2mVsIntrinsicPct = ((note.m2m - note.intrinsic) / note.intrinsic) * 100;
   }
 
-  // Action logic (lightweight)
-  const nearBarrier = principalCush !== null && principalCush < 10;
-  const veryAttractive = attractivenessScore !== null && attractivenessScore >= 75;
-  const strongSwap = swapScore !== null && swapScore >= 80;
+  let swapRecommendation: "yes" | "no" | "na" = "na";
+  let swapReason = "";
 
-  let action = "Monitor";
-  let why = "No strong signal.";
+  // Handle Income notes
+  if (note.returnType === "Income") {
+    const marketCoupon = findMarketCoupon(note, snap);
+    swapDetails.marketCoupon = marketCoupon;
 
-  if (nearBarrier) {
-    action = "Risk watch";
-    why = `Principal cushion is low (${principalCush!.toFixed(1)}%). The underlier is close to the barrier.`;
-  } else if (strongSwap) {
-    action = "Consider swap";
-    if (breakdown.hasMarketMatch && breakdown.annualBenefit !== null) {
-      const benefitBps = Math.round(breakdown.annualBenefit * 10000);
-      why = `Market now pays ~${benefitBps > 0 ? "+" : ""}${benefitBps}bps more annually. After ${frictionPoints.toFixed(1)}pt friction, swapping may improve returns over ${breakdown.horizonMonths}mo horizon.`;
+    if (marketCoupon !== null && note.couponPa !== null) {
+      // Calculate the economics
+      const couponDiffBps = Math.round((marketCoupon - note.couponPa) * 10000);
+      swapDetails.couponDiffBps = couponDiffBps;
+
+      const remainingMonths = note.timeToMaturityMonths ?? 12;
+      const horizonMonths = Math.max(3, Math.min(12, remainingMonths));
+      swapDetails.horizonMonths = horizonMonths;
+
+      const estimatedSellPrice = (note.m2m ?? 1) - (frictionPoints / 100);
+      swapDetails.estimatedSellPrice = estimatedSellPrice;
+
+      const unwindCost = 1 - estimatedSellPrice; // cost in price points
+      const annualBenefitPts = (marketCoupon - note.couponPa); // as decimal
+      const netBenefitPts = annualBenefitPts * (horizonMonths / 12) - unwindCost;
+      swapDetails.netBenefitPts = netBenefitPts;
+
+      // Decision logic for income notes
+      if (netBenefitPts > 0.005) { // > 0.5 points net benefit
+        swapRecommendation = "yes";
+        const netBenefitDisplay = (netBenefitPts * 100).toFixed(1);
+        swapReason = `Market pays ${couponDiffBps > 0 ? "+" : ""}${couponDiffBps} bps more annually. ` +
+          `After selling at ~${(estimatedSellPrice * 100).toFixed(1)} and buying new at 100, ` +
+          `net benefit is ~${netBenefitDisplay} points over ${horizonMonths} months.`;
+      } else if (netBenefitPts < -0.01) { // losing more than 1 point
+        swapRecommendation = "no";
+        const yourCouponPct = (note.couponPa * 100).toFixed(1);
+        const marketCouponPct = (marketCoupon * 100).toFixed(1);
+        swapReason = `Your coupon (${yourCouponPct}%) is competitive with market (${marketCouponPct}%). ` +
+          `Swapping would cost ~${Math.abs(netBenefitPts * 100).toFixed(1)} points after friction. Hold.`;
+      } else {
+        swapRecommendation = "no";
+        swapReason = `Marginal economics. Your coupon is close to market rates. ` +
+          `No clear benefit to swapping after transaction costs.`;
+      }
     } else {
-      why = "Based on relative valuation, this note appears to offer below-average value vs. peers.";
+      // No market data for income note
+      swapRecommendation = "na";
+      swapReason = "No comparable market data available. Cannot evaluate swap economics for this structure.";
     }
-  } else if (veryAttractive) {
-    action = "Keep (attractive)";
-    if (breakdown.hasMarketMatch && breakdown.couponEdge !== null) {
-      const edgeBps = Math.round(breakdown.couponEdge * 10000);
-      why = `Your coupon is ${edgeBps > 0 ? "+" : ""}${edgeBps}bps vs. current market. These terms are better than what you'd get today.`;
+  }
+  // Handle Growth notes
+  else if (note.returnType === "Growth") {
+    const m2mVsIntrinsic = swapDetails.m2mVsIntrinsicPct;
+    const cushion = principalCush;
+
+    if (m2mVsIntrinsic !== null && cushion !== null) {
+      const cushionEroded = cushion < 25;
+
+      if (m2mVsIntrinsic >= -2 && cushionEroded) {
+        // M2M is close to or above intrinsic, and protection is getting thin
+        swapRecommendation = "yes";
+        const m2mDisplay = note.m2m !== null ? (note.m2m * 100).toFixed(1) : "—";
+        const intrinsicDisplay = note.intrinsic !== null ? (note.intrinsic * 100).toFixed(1) : "—";
+        swapReason = `M2M (${m2mDisplay}) is ${m2mVsIntrinsic >= 0 ? "above" : "close to"} intrinsic (${intrinsicDisplay}). ` +
+          `Cushion is only ${cushion.toFixed(1)}%. ` +
+          `Swapping would reset your protection and give fresh upside participation.`;
+      } else if (m2mVsIntrinsic < -5) {
+        // Selling would crystallize a significant loss
+        swapRecommendation = "no";
+        swapReason = `M2M is ${Math.abs(m2mVsIntrinsic).toFixed(1)}% below intrinsic. ` +
+          `Selling now crystallizes a loss. Hold unless you need to exit for other reasons.`;
+      } else {
+        // M2M reasonable but cushion is healthy
+        swapRecommendation = "no";
+        swapReason = `Cushion is healthy at ${cushion.toFixed(1)}%. ` +
+          `No urgent reason to swap. M2M is ${m2mVsIntrinsic >= 0 ? "above" : `${Math.abs(m2mVsIntrinsic).toFixed(1)}% below`} intrinsic.`;
+      }
     } else {
-      why = "Based on relative valuation, this note appears to offer above-average value vs. peers.";
+      // Missing data for growth note evaluation
+      swapRecommendation = "na";
+      swapReason = "Missing M2M or intrinsic value data. Cannot evaluate swap economics.";
     }
+  }
+  // Other note types
+  else {
+    swapRecommendation = "na";
+    swapReason = "Swap analysis not available for this note type.";
+  }
+
+  // Override with risk warning if near barrier
+  if (isNearBarrier) {
+    swapReason = `WARNING: Principal cushion is only ${principalCush!.toFixed(1)}%. ` +
+      `Underlier is close to barrier. ${swapReason}`;
   }
 
   return {
-    attractivenessScore,
-    swapScore,
-    marketCouponPa,
+    swapRecommendation,
+    swapReason,
+    swapDetails,
+    marketCouponPa: swapDetails.marketCoupon,
     principalCushionPct: principalCush,
     couponCushionPct: couponCush,
-    action,
-    why,
-    breakdown,
+    isNearBarrier,
   };
 }
