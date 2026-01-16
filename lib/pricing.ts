@@ -4,25 +4,35 @@ import { canonicalUnderlierKey, toNum, toStr, fmtDateIso } from "./utils";
 export type MarketSnapshot = {
   structureLabel: string | null;
   asOf: string | null; // YYYY-MM-DD
-  basketCouponMap: Record<string, number>; // key = canonicalUnderlierKey
+  basketCouponMap: Record<string, number>; // key = canonicalUnderlierKey, value = coupon (decimal)
+  basketParticipationMap: Record<string, number>; // key = canonicalUnderlierKey, value = participation (e.g., 1.5 = 150%)
 };
 
 /**
  * Parses the provided pricing workbook.
- * Currently supports the template shown in: "Pricing Analysis 01-12-2026.xlsx"
- * Sheet: "Broad Based Historical Pricing"
- * Row0 col1: structure label
- * Row1: header with Date + basket columns (e.g. "SPX,RTY,NDX")
- * Remaining rows: time series; latest row is used as the current market.
+ * Supports:
+ * - Sheet: "Broad Based Historical Pricing" for income note coupons
+ * - Sheet: "Growth Pricing" for participation rates (optional)
+ *
+ * Format for income (Broad Based Historical Pricing):
+ *   Row0 col1: structure label
+ *   Row1: header with Date + basket columns (e.g. "SPX,RTY,NDX")
+ *   Remaining rows: time series; latest row is used as the current market.
+ *
+ * Format for growth (Growth Pricing):
+ *   Row0: Header with basket columns
+ *   Row1: Participation rates (e.g., 1.5 for 150%)
  */
 export function parseMarketSnapshotFromXlsx(buffer: Buffer): MarketSnapshot | null {
   const wb = XLSX.read(buffer, { type: "buffer" });
-  const sheetName =
-    wb.SheetNames.find((s) => s.toLowerCase().includes("broad based")) ?? wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  if (!ws) return null;
 
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
+  // Parse income pricing (coupons)
+  const incomeSheetName =
+    wb.SheetNames.find((s) => s.toLowerCase().includes("broad based")) ?? wb.SheetNames[0];
+  const incomeWs = wb.Sheets[incomeSheetName];
+  if (!incomeWs) return null;
+
+  const rows = XLSX.utils.sheet_to_json(incomeWs, { header: 1, raw: true }) as any[][];
   if (rows.length < 5) return null;
 
   const structureLabel = toStr(rows?.[0]?.[1]);
@@ -64,5 +74,35 @@ export function parseMarketSnapshotFromXlsx(buffer: Buffer): MarketSnapshot | nu
     basketCouponMap[key] = v;
   }
 
-  return { structureLabel, asOf, basketCouponMap };
+  // Parse growth pricing (participation rates) if sheet exists
+  const basketParticipationMap: Record<string, number> = {};
+  const growthSheetName = wb.SheetNames.find((s) =>
+    s.toLowerCase().includes("growth") || s.toLowerCase().includes("participation")
+  );
+
+  if (growthSheetName) {
+    const growthWs = wb.Sheets[growthSheetName];
+    if (growthWs) {
+      const growthRows = XLSX.utils.sheet_to_json(growthWs, { header: 1, raw: true }) as any[][];
+      if (growthRows.length >= 2) {
+        const growthHeader = growthRows[0] as any[];
+        const growthData = growthRows[1] as any[];
+
+        for (let c = 0; c < growthHeader.length; c++) {
+          const colName = toStr(growthHeader[c]);
+          if (!colName) continue;
+          if (colName.toLowerCase() === "date" || colName.toLowerCase().includes("label")) continue;
+
+          const v = toNum(growthData[c]);
+          if (v === null) continue;
+
+          const key = canonicalUnderlierKey(colName.split(","));
+          // Normalize: if value is > 5, assume it's a percentage (e.g., 150 = 150%)
+          basketParticipationMap[key] = v > 5 ? v / 100 : v;
+        }
+      }
+    }
+  }
+
+  return { structureLabel, asOf, basketCouponMap, basketParticipationMap };
 }
