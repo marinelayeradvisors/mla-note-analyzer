@@ -138,9 +138,30 @@ export function NoteDetailModal({ note, onClose }: { note: NoteResult; onClose: 
             <div className="rounded-xl border p-4">
               <h3 className="font-semibold mb-3">Swap Economics</h3>
               <div className="space-y-3 text-sm">
+                {/* Comparison Table */}
+                <div className="grid grid-cols-3 gap-2 text-center border-b pb-3">
+                  <div></div>
+                  <div className="font-medium text-slate-500 text-xs">Your Note</div>
+                  <div className="font-medium text-slate-500 text-xs">New Note</div>
+
+                  <div className="text-left text-slate-600">Coupon</div>
+                  <div className="font-medium">{fmtPct(d.yourCoupon)}</div>
+                  <div className={`font-medium ${(d.couponDiffBps ?? 0) > 0 ? "text-amber-600" : ""}`}>
+                    {fmtPct(d.marketCoupon)}
+                  </div>
+
+                  <div className="text-left text-slate-600">Call Freq</div>
+                  <div className="font-medium text-xs">
+                    {d.isNonCallable ? "Non-call" : d.callFreq ?? "—"}
+                  </div>
+                  <div className="font-medium text-xs text-slate-400">
+                    Typically Monthly
+                  </div>
+                </div>
+
                 <div className="flex justify-between items-start">
                   <span className="text-slate-600">
-                    Market match
+                    Match type
                     <span className="block text-xs text-slate-400">
                       {d.matchType === "exact" ? "Exact basket match" :
                        d.matchType === "partial" ? "Similar basket (underliers match)" :
@@ -148,41 +169,74 @@ export function NoteDetailModal({ note, onClose }: { note: NoteResult; onClose: 
                     </span>
                   </span>
                   <span className={`font-medium ${d.matchType === "exact" ? "text-emerald-600" : "text-amber-600"}`}>
-                    {d.matchType === "exact" ? "✓" : d.matchType === "partial" ? "~" : "?"}
+                    {d.matchType === "exact" ? "✓ Exact" : d.matchType === "partial" ? "~ Similar" : "? Avg"}
                   </span>
                 </div>
+
                 <div className="flex justify-between">
-                  <span className="text-slate-600">Your coupon</span>
-                  <span className="font-medium">{fmtPct(d.yourCoupon)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Market coupon</span>
-                  <span className="font-medium">{fmtPct(d.marketCoupon)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Coupon difference</span>
+                  <span className="text-slate-600">Coupon improvement</span>
                   <span className={`font-medium ${(d.couponDiffBps ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-                    {fmtBps(d.couponDiffBps)}
+                    {fmtBps(d.couponDiffBps)}/yr
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-600">Est. sell price (incl. {d.frictionPoints}pt friction)</span>
-                  <span className="font-medium">~{fmtPrice(d.estimatedSellPrice)}</span>
+                  <span className="text-slate-600">Est. sell price</span>
+                  <span className="font-medium">~{fmtPrice(d.estimatedSellPrice)} ({d.frictionPoints}pt friction)</span>
                 </div>
-                <div className="border-t pt-3 flex justify-between">
-                  <span className="font-semibold">Net benefit (annual)</span>
-                  <span className={`font-bold ${(d.netBenefitBps ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-                    {fmtBps(d.netBenefitBps)}
-                  </span>
+
+                <div className="border-t pt-3 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="font-semibold">Net benefit (1yr)</span>
+                    <span className={`font-bold ${(d.netBenefitBps ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+                      {fmtBps(d.netBenefitBps)}
+                    </span>
+                  </div>
+
+                  {d.paybackMonths !== null && d.couponDiffBps !== null && d.couponDiffBps > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Payback period</span>
+                      <span className={`font-medium ${d.paybackMonths <= 12 ? "text-emerald-600" : d.paybackMonths <= 24 ? "text-amber-600" : "text-rose-600"}`}>
+                        {d.paybackMonths} months
+                      </span>
+                    </div>
+                  )}
+
+                  {d.breakevenM2M !== null && d.couponDiffBps !== null && d.couponDiffBps > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Breakeven M2M</span>
+                      <span className="font-medium">
+                        ≥ {(d.breakevenM2M * 100).toFixed(1)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
+
+              {/* Actionable Summary */}
+              {d.breakevenM2M !== null && d.m2m !== null && (
+                <div className={`mt-3 p-3 rounded text-sm ${
+                  d.m2m >= d.breakevenM2M ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"
+                }`}>
+                  {d.m2m >= d.breakevenM2M ? (
+                    <>
+                      <strong>✓ SWAP:</strong> Current M2M ({fmtPrice(d.m2m)}) is at or above breakeven ({(d.breakevenM2M * 100).toFixed(1)}).
+                    </>
+                  ) : (
+                    <>
+                      <strong>⏸ HOLD</strong> at M2M {fmtPrice(d.m2m)}, but <strong>SWAP if M2M ≥ {(d.breakevenM2M * 100).toFixed(1)}</strong>
+                    </>
+                  )}
+                </div>
+              )}
+
               {d.isNonCallable && (
                 <p className="mt-3 text-xs text-amber-700 bg-amber-50 p-2 rounded">
-                  ⚠️ Your note is non-callable. A replacement note would typically be autocallable.
+                  ⚠️ Your note is non-callable. A replacement note would typically be autocallable (monthly).
                 </p>
               )}
+
               <p className="mt-3 text-xs text-slate-500">
-                Net benefit = coupon improvement − exit cost (M2M discount + {d.frictionPoints}pt friction)
+                Net benefit = coupon improvement − exit cost. Payback = time to recover exit cost from higher coupon.
               </p>
             </div>
           )}

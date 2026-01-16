@@ -10,6 +10,8 @@ export type SwapDetails = {
   couponDiffBps: number | null;
   estimatedSellPrice: number | null;
   netBenefitBps: number | null;
+  paybackMonths: number | null;  // How long to recover exit cost from coupon gain
+  breakevenM2M: number | null;   // M2M price at which swap breaks even
 
   // For growth notes
   m2m: number | null;
@@ -20,6 +22,10 @@ export type SwapDetails = {
   cushionGain: number | null;
   exitCostPct: number | null;
   marketParticipation: number | null; // From pricing file
+
+  // Call info for display
+  callFreq: string | null;       // "Monthly", "Quarterly", etc.
+  noCallMonths: number | null;   // How many months until first call
 
   // Match info
   matchType: "exact" | "partial" | "average" | "none";
@@ -118,12 +124,15 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
   const noteIsNonCallable = isNonCallable(note);
 
   // Initialize swap details
+  const noCallMonths = computeNoCallMonths(note);
   const swapDetails: SwapDetails = {
     yourCoupon: note.couponPa,
     marketCoupon: null,
     couponDiffBps: null,
     estimatedSellPrice: null,
     netBenefitBps: null,
+    paybackMonths: null,
+    breakevenM2M: null,
     m2m: note.m2m,
     intrinsic: note.intrinsic,
     embeddedGainPct: null,
@@ -133,6 +142,8 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
     exitCostPct: null,
     marketParticipation: snap?.basketParticipationMap ?
       Object.values(snap.basketParticipationMap)[0] ?? null : null,
+    callFreq: note.callObsFreq,
+    noCallMonths: noCallMonths,
     matchType: "none",
     isNonCallable: noteIsNonCallable,
     frictionPoints,
@@ -173,32 +184,63 @@ export function scoreNote(note: NormalizedNote, snap: MarketSnapshot | null, fri
       const estimatedSellPrice = (note.m2m ?? 1) - (frictionPoints / 100);
       swapDetails.estimatedSellPrice = estimatedSellPrice;
 
+      // Net benefit over 1 year horizon (default)
       const netBenefitBps = couponDiffBps - exitCostBps;
       swapDetails.netBenefitBps = netBenefitBps;
+
+      // Calculate payback period (months to recover exit cost from coupon gain)
+      // paybackMonths = (exitCostBps / couponDiffBps) * 12
+      if (couponDiffBps > 0) {
+        swapDetails.paybackMonths = Math.round((exitCostBps / couponDiffBps) * 12);
+      } else {
+        swapDetails.paybackMonths = null; // N/A if market coupon is lower
+      }
+
+      // Calculate breakeven M2M price (what price makes swap worthwhile over 1yr)
+      // At breakeven: couponDiffBps = exitCostBps
+      // couponDiffBps = ((1 - breakevenM2M) * 10000) + frictionBps
+      // breakevenM2M = 1 - (couponDiffBps - frictionBps) / 10000
+      if (couponDiffBps > 0) {
+        const breakevenM2M = 1 - (couponDiffBps - (frictionPoints * 100)) / 10000;
+        swapDetails.breakevenM2M = Math.max(0, Math.min(1.5, breakevenM2M)); // Clamp to reasonable range
+      } else {
+        swapDetails.breakevenM2M = null;
+      }
 
       // Calculate swap score: 50 base + net benefit adjustment
       // Each 50bps net benefit = 1 point
       swapScore = clamp(50 + (netBenefitBps / 50), 0, 100);
 
-      // Decision logic
+      // Decision logic with payback info
+      const currentM2M = ((note.m2m ?? 1) * 100).toFixed(1);
+      const paybackText = swapDetails.paybackMonths !== null && swapDetails.paybackMonths < 999
+        ? ` Payback: ${swapDetails.paybackMonths} months.`
+        : "";
+      const breakevenText = swapDetails.breakevenM2M !== null
+        ? ` Swap if M2M ≥ ${(swapDetails.breakevenM2M * 100).toFixed(1)}.`
+        : "";
+
       if (netBenefitBps > 50) { // > 50bps net benefit
         swapRecommendation = "yes";
         const matchLabel = match.matchType === "exact" ? "exact match" :
                           match.matchType === "partial" ? "similar basket" : "market average";
-        swapReason = `Comparable note (${matchLabel}) yields ${(match.coupon * 100).toFixed(1)}% vs your ${(note.couponPa * 100).toFixed(1)}%. ` +
-          `Net benefit: ${netBenefitBps > 0 ? "+" : ""}${netBenefitBps} bps after ${frictionPoints}pt friction.`;
+        swapReason = `Market (${matchLabel}) yields ${(match.coupon * 100).toFixed(1)}% vs your ${(note.couponPa * 100).toFixed(1)}%. ` +
+          `Net: +${netBenefitBps} bps/yr.${paybackText}`;
       } else if (netBenefitBps < -100) { // losing more than 100bps
         swapRecommendation = "no";
-        swapReason = `Your coupon (${(note.couponPa * 100).toFixed(1)}%) beats market (${(match.coupon * 100).toFixed(1)}%). ` +
-          `Swapping would cost ${Math.abs(netBenefitBps)} bps. Hold.`;
+        swapReason = `Your ${(note.couponPa * 100).toFixed(1)}% beats market ${(match.coupon * 100).toFixed(1)}%. HOLD at M2M ${currentM2M}.`;
+      } else if (couponDiffBps > 0 && swapDetails.paybackMonths !== null) {
+        // Marginal case - market pays more but exit cost high
+        swapRecommendation = "no";
+        swapReason = `+${couponDiffBps} bps coupon but ${swapDetails.paybackMonths}mo payback at M2M ${currentM2M}.${breakevenText}`;
       } else {
         swapRecommendation = "no";
-        swapReason = `Marginal: Your coupon is close to market. Net ${netBenefitBps > 0 ? "+" : ""}${netBenefitBps} bps after costs.`;
+        swapReason = `Marginal: Net ${netBenefitBps > 0 ? "+" : ""}${netBenefitBps} bps after costs.`;
       }
 
       // Add non-callable warning
       if (noteIsNonCallable) {
-        swapReason += " Note: Your note is non-callable; replacement would be autocallable.";
+        swapReason += " ⚠️ Non-callable.";
       }
     } else {
       // No market data

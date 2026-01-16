@@ -10,6 +10,8 @@ export type SwapDetails = {
   couponDiffBps: number | null;
   estimatedSellPrice: number | null;
   netBenefitBps: number | null;
+  paybackMonths: number | null;
+  breakevenM2M: number | null;
 
   // For growth notes
   m2m: number | null;
@@ -20,6 +22,10 @@ export type SwapDetails = {
   cushionGain: number | null;
   exitCostPct: number | null;
   marketParticipation: number | null;
+
+  // Call info
+  callFreq: string | null;
+  noCallMonths: number | null;
 
   // Match info
   matchType: "exact" | "partial" | "average" | "none";
@@ -238,11 +244,16 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
               <th className="px-3 py-3">Issuer</th>
               <th className="px-3 py-3">CUSIP</th>
               <th className="px-3 py-3">Type</th>
+              <th className="px-3 py-3">
+                <span className="border-b border-dashed border-slate-400" title="Monthly, Quarterly, etc. Shows autocall observation frequency">
+                  Call
+                </span>
+              </th>
               <th className="px-3 py-3">Underliers</th>
               <th className="px-3 py-3">Notional</th>
               <SortHeader field="m2m">M2M</SortHeader>
               <SortHeader field="coupon">Coupon</SortHeader>
-              <th className="px-3 py-3">Market Coupon</th>
+              <th className="px-3 py-3">Mkt Cpn</th>
               <SortHeader field="cushion">Cushion</SortHeader>
               <SortHeader field="score">
                 <span className="border-b border-dashed border-slate-400" title="0-100 score: higher = stronger swap candidate">
@@ -269,6 +280,15 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
                 <td className="px-3 py-3 whitespace-nowrap">{r.issuer ?? "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap font-mono text-xs">{r.cusip ?? "—"}</td>
                 <td className="px-3 py-3">{r.returnType}</td>
+                <td className="px-3 py-3 whitespace-nowrap text-xs">
+                  {r.swapDetails.isNonCallable ? (
+                    <span className="text-slate-500">Non-call</span>
+                  ) : r.swapDetails.callFreq ? (
+                    <span title={r.swapDetails.noCallMonths ? `${r.swapDetails.noCallMonths}mo no-call` : undefined}>
+                      {r.swapDetails.callFreq}
+                    </span>
+                  ) : "—"}
+                </td>
                 <td className="px-3 py-3">{r.underliers.length ? r.underliers.join(", ") : "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{fmtUsd(r.notionalUsd)}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{fmtM2M(r.m2m)}</td>
@@ -294,7 +314,7 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
             ))}
             {!filtered.length && (
               <tr>
-                <td className="px-3 py-6 text-center text-slate-500" colSpan={12}>
+                <td className="px-3 py-6 text-center text-slate-500" colSpan={13}>
                   No matches.
                 </td>
               </tr>
