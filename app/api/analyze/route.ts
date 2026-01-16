@@ -52,30 +52,26 @@ export async function POST(req: NextRequest) {
         principalCushionPct: scored.principalCushionPct,
         couponCushionPct: scored.couponCushionPct,
 
-        // New simplified swap fields
+        // Swap analysis fields
+        swapScore: scored.swapScore,
         swapRecommendation: scored.swapRecommendation,
         swapReason: scored.swapReason,
-        swapDetails: scored.swapDetails,
+        swapDetails: {
+          ...scored.swapDetails,
+          currentCushion: scored.principalCushionPct,
+        },
         isNearBarrier: scored.isNearBarrier,
       };
     });
 
-    // Sort: REVIEW (yes) first, then HOLD (no), then N/A, with risk warnings at top
+    // Sort by swap score (highest first), with risk warnings at top
     results.sort((a, b) => {
       // Risk warnings first
       if (a.isNearBarrier && !b.isNearBarrier) return -1;
       if (!a.isNearBarrier && b.isNearBarrier) return 1;
 
-      // Then by swap recommendation: yes > no > na
-      const recRank: Record<string, number> = { yes: 0, no: 1, na: 2 };
-      const ra = recRank[a.swapRecommendation] ?? 9;
-      const rb = recRank[b.swapRecommendation] ?? 9;
-      if (ra !== rb) return ra - rb;
-
-      // Within same recommendation, sort by net benefit (for income) or cushion (for growth)
-      const benefitA = a.swapDetails.netBenefitPts ?? 0;
-      const benefitB = b.swapDetails.netBenefitPts ?? 0;
-      return benefitB - benefitA;
+      // Then by swap score (higher = more attractive to swap)
+      return b.swapScore - a.swapScore;
     });
 
     const asOf = snap?.asOf ?? null;

@@ -19,8 +19,7 @@ function fmtBps(x: number | null) {
 
 function fmtPts(x: number | null) {
   if (x === null || Number.isNaN(x)) return "—";
-  const pts = x * 100;
-  return `${pts >= 0 ? "+" : ""}${pts.toFixed(2)} pts`;
+  return `${x >= 0 ? "+" : ""}${x.toFixed(1)} pts`;
 }
 
 function InfoRow({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -101,7 +100,7 @@ export function NoteDetailModal({ note, onClose }: { note: NoteResult; onClose: 
               />
               <InfoRow
                 label="Cushion"
-                value={d.principalCushionPct !== null ? `${d.principalCushionPct.toFixed(1)}%` : "—"}
+                value={d.currentCushion !== null ? `${d.currentCushion.toFixed(1)}%` : "—"}
                 hint="How far underlier can fall before hitting barrier"
               />
               {isIncome && (
@@ -125,9 +124,9 @@ export function NoteDetailModal({ note, onClose }: { note: NoteResult; onClose: 
                     hint="Theoretical value based on underlier performance"
                   />
                   <InfoRow
-                    label="M2M vs Intrinsic"
-                    value={d.m2mVsIntrinsicPct !== null ? `${d.m2mVsIntrinsicPct >= 0 ? "+" : ""}${d.m2mVsIntrinsicPct.toFixed(1)}%` : "—"}
-                    hint="Positive = selling above theoretical value"
+                    label="Embedded Gain"
+                    value={d.embeddedGainPct !== null ? `${d.embeddedGainPct >= 0 ? "+" : ""}${d.embeddedGainPct.toFixed(1)}%` : "—"}
+                    hint="M2M vs intrinsic - gains you'd lock in by swapping"
                   />
                 </>
               )}
@@ -137,72 +136,113 @@ export function NoteDetailModal({ note, onClose }: { note: NoteResult; onClose: 
           {/* Swap Math - Only for Income with market data */}
           {isIncome && hasMarketData && (
             <div className="rounded-xl border p-4">
-              <h3 className="font-semibold mb-3">The Math</h3>
+              <h3 className="font-semibold mb-3">Swap Economics</h3>
               <div className="space-y-3 text-sm">
+                <div className="flex justify-between items-start">
+                  <span className="text-slate-600">
+                    Market match
+                    <span className="block text-xs text-slate-400">
+                      {d.matchType === "exact" ? "Exact basket match" :
+                       d.matchType === "partial" ? "Similar basket (underliers match)" :
+                       d.matchType === "average" ? "Market average (indicative)" : "No match"}
+                    </span>
+                  </span>
+                  <span className={`font-medium ${d.matchType === "exact" ? "text-emerald-600" : "text-amber-600"}`}>
+                    {d.matchType === "exact" ? "✓" : d.matchType === "partial" ? "~" : "?"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Your coupon</span>
+                  <span className="font-medium">{fmtPct(d.yourCoupon)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Market coupon</span>
+                  <span className="font-medium">{fmtPct(d.marketCoupon)}</span>
+                </div>
                 <div className="flex justify-between">
                   <span className="text-slate-600">Coupon difference</span>
                   <span className={`font-medium ${(d.couponDiffBps ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
                     {fmtBps(d.couponDiffBps)}
-                    <span className="text-slate-400 font-normal ml-1">
-                      ({(d.couponDiffBps ?? 0) > 0 ? "market pays more" : "your coupon is better"})
-                    </span>
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-600">Estimated sell price</span>
+                  <span className="text-slate-600">Est. sell price (incl. {d.frictionPoints}pt friction)</span>
                   <span className="font-medium">~{fmtPrice(d.estimatedSellPrice)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Buy new note at</span>
-                  <span className="font-medium">100.00</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Horizon</span>
-                  <span className="font-medium">{d.horizonMonths ?? "—"} months</span>
-                </div>
                 <div className="border-t pt-3 flex justify-between">
-                  <span className="font-semibold">Net benefit</span>
-                  <span className={`font-bold ${(d.netBenefitPts ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
-                    {fmtPts(d.netBenefitPts)}
+                  <span className="font-semibold">Net benefit (annual)</span>
+                  <span className={`font-bold ${(d.netBenefitBps ?? 0) > 0 ? "text-amber-600" : "text-emerald-600"}`}>
+                    {fmtBps(d.netBenefitBps)}
                   </span>
                 </div>
               </div>
+              {d.isNonCallable && (
+                <p className="mt-3 text-xs text-amber-700 bg-amber-50 p-2 rounded">
+                  ⚠️ Your note is non-callable. A replacement note would typically be autocallable.
+                </p>
+              )}
               <p className="mt-3 text-xs text-slate-500">
-                Net benefit = (coupon improvement × horizon) − (selling cost + friction of {d.frictionPoints}pt)
+                Net benefit = coupon improvement − exit cost (M2M discount + {d.frictionPoints}pt friction)
               </p>
             </div>
           )}
 
           {/* Swap Analysis - For Growth notes */}
-          {isGrowth && d.m2mVsIntrinsicPct !== null && (
+          {isGrowth && d.m2m !== null && (
             <div className="rounded-xl border p-4">
-              <h3 className="font-semibold mb-3">Growth Note Analysis</h3>
+              <h3 className="font-semibold mb-3">Swap Economics</h3>
               <div className="space-y-3 text-sm">
-                <p className="text-slate-600">
-                  {d.m2mVsIntrinsicPct >= 0 ? (
-                    <>M2M is <span className="font-medium text-emerald-600">above</span> intrinsic value.
-                    You could sell without crystallizing a loss.</>
-                  ) : d.m2mVsIntrinsicPct >= -5 ? (
-                    <>M2M is <span className="font-medium text-amber-600">slightly below</span> intrinsic value ({d.m2mVsIntrinsicPct.toFixed(1)}%).
-                    Small loss if you sell now.</>
-                  ) : (
-                    <>M2M is <span className="font-medium text-rose-600">significantly below</span> intrinsic value ({d.m2mVsIntrinsicPct.toFixed(1)}%).
-                    Selling would crystallize a meaningful loss.</>
+                {/* Comparison Table */}
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div></div>
+                  <div className="font-medium text-slate-500 text-xs">Your Note</div>
+                  <div className="font-medium text-slate-500 text-xs">New Note</div>
+
+                  <div className="text-left text-slate-600">Cushion</div>
+                  <div className="font-medium">{d.currentCushion !== null ? `${d.currentCushion.toFixed(0)}%` : "—"}</div>
+                  <div className="font-medium text-emerald-600">~{d.newCushion}%</div>
+
+                  {d.embeddedGainPct !== null && (
+                    <>
+                      <div className="text-left text-slate-600">Embedded Gain</div>
+                      <div className={`font-medium ${d.embeddedGainPct >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {d.embeddedGainPct >= 0 ? "+" : ""}{d.embeddedGainPct.toFixed(1)}%
+                      </div>
+                      <div className="font-medium text-slate-400">—</div>
+                    </>
                   )}
-                </p>
-                {d.principalCushionPct !== null && d.principalCushionPct < 25 && (
-                  <p className="text-amber-700 bg-amber-50 p-2 rounded">
-                    Cushion is only {d.principalCushionPct.toFixed(1)}%. Swapping would reset your protection barrier.
+                </div>
+
+                {/* Protection Reset Value */}
+                {d.cushionGain !== null && d.cushionGain > 0 && (
+                  <div className="bg-emerald-50 p-3 rounded text-emerald-800 text-sm">
+                    <strong>Protection reset value:</strong> Swapping resets your barrier from {d.currentCushion?.toFixed(0)}% to {d.newCushion}%
+                    <span className="block text-xs mt-1">
+                      This means the market can drop an additional {d.cushionGain.toFixed(0)}% before you lose principal.
+                    </span>
+                  </div>
+                )}
+
+                {/* Embedded Gain Lock-in */}
+                {d.embeddedGainPct !== null && d.embeddedGainPct > 5 && (
+                  <div className="bg-amber-50 p-3 rounded text-amber-800 text-sm">
+                    <strong>Lock in gains:</strong> You're up {d.embeddedGainPct.toFixed(1)}% vs intrinsic. Swapping locks these in.
+                  </div>
+                )}
+
+                {/* Exit Cost */}
+                <div className="flex justify-between pt-2 border-t">
+                  <span className="text-slate-600">Exit cost</span>
+                  <span className={`font-medium ${(d.exitCostPct ?? 0) > 5 ? "text-rose-600" : "text-slate-600"}`}>
+                    {fmtPts(d.exitCostPct)}
+                  </span>
+                </div>
+
+                {d.isNonCallable && (
+                  <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded">
+                    ⚠️ Your note is non-callable. A replacement note would typically be autocallable.
                   </p>
                 )}
-                <div className="bg-slate-50 p-3 rounded text-slate-600">
-                  <strong>If you swap:</strong>
-                  <ul className="mt-1 space-y-1 text-xs">
-                    <li>• Reset protection barrier to ~70%</li>
-                    <li>• Get fresh upside participation</li>
-                    <li>• Cost: ~{d.frictionPoints}pt friction + any M2M discount</li>
-                  </ul>
-                </div>
               </div>
             </div>
           )}

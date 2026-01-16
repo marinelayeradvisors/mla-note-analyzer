@@ -4,16 +4,26 @@ import { useMemo, useState } from "react";
 import { NoteDetailModal } from "./NoteDetailModal";
 
 export type SwapDetails = {
+  // For income notes
   yourCoupon: number | null;
   marketCoupon: number | null;
   couponDiffBps: number | null;
   estimatedSellPrice: number | null;
-  netBenefitPts: number | null;
-  horizonMonths: number | null;
+  netBenefitBps: number | null;
+
+  // For growth notes
   m2m: number | null;
   intrinsic: number | null;
-  m2mVsIntrinsicPct: number | null;
-  principalCushionPct: number | null;
+  embeddedGainPct: number | null;
+  currentCushion: number | null;
+  newCushion: number;
+  cushionGain: number | null;
+  exitCostPct: number | null;
+  marketParticipation: number | null;
+
+  // Match info
+  matchType: "exact" | "partial" | "average" | "none";
+  isNonCallable: boolean;
   frictionPoints: number;
 };
 
@@ -34,6 +44,7 @@ export type NoteResult = {
   principalCushionPct: number | null;
   couponCushionPct: number | null;
 
+  swapScore: number;
   swapRecommendation: "yes" | "no" | "na";
   swapReason: string;
   swapDetails: SwapDetails;
@@ -89,14 +100,16 @@ function fmtM2M(x: number | null) {
   return (x * 100).toFixed(2);
 }
 
-type SortField = "recommendation" | "cushion" | "coupon" | "m2m" | null;
+type SortField = "recommendation" | "cushion" | "coupon" | "m2m" | "score" | null;
 type SortDir = "asc" | "desc";
+type TypeFilter = "all" | "Income" | "Growth";
 
 export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; asOfLabel: string | null }) {
   const [q, setQ] = useState("");
   const [selectedNote, setSelectedNote] = useState<NoteResult | null>(null);
-  const [sortField, setSortField] = useState<SortField>("recommendation");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sortField, setSortField] = useState<SortField>("score");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -111,8 +124,13 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
     const query = q.trim().toLowerCase();
     let data = results;
 
+    // Apply type filter
+    if (typeFilter !== "all") {
+      data = data.filter((r) => r.returnType === typeFilter);
+    }
+
     if (query) {
-      data = results.filter((r) => {
+      data = data.filter((r) => {
         const hay = [
           r.issuer ?? "",
           r.cusip ?? "",
@@ -130,7 +148,9 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
       data = [...data].sort((a, b) => {
         let cmp = 0;
 
-        if (sortField === "recommendation") {
+        if (sortField === "score") {
+          cmp = (a.swapScore ?? 0) - (b.swapScore ?? 0);
+        } else if (sortField === "recommendation") {
           // Risk first, then Review, then Hold, then N/A
           const rank = (r: NoteResult) => {
             if (r.isNearBarrier) return 0;
@@ -152,7 +172,7 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
     }
 
     return data;
-  }, [q, results, sortField, sortDir]);
+  }, [q, results, sortField, sortDir, typeFilter]);
 
   const SortHeader = ({ field, children }: { field: SortField; children: React.ReactNode }) => (
     <th
@@ -168,24 +188,47 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
     </th>
   );
 
+  const FilterButton = ({ filter, label }: { filter: TypeFilter; label: string }) => (
+    <button
+      onClick={() => setTypeFilter(filter)}
+      className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+        typeFilter === filter
+          ? "bg-slate-800 text-white"
+          : "bg-white text-slate-600 hover:bg-slate-100 border"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="mt-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm text-slate-600">
-          {asOfLabel ? (
-            <span>As-of: <span className="font-medium text-slate-800">{asOfLabel}</span></span>
-          ) : (
-            <span>As-of: <span className="font-medium text-slate-800">Unknown</span></span>
-          )}
-          <span className="ml-3 text-slate-400">|</span>
-          <span className="ml-3">{filtered.length} notes</span>
+      <div className="flex flex-col gap-3">
+        {/* Type Filter Buttons */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-500 mr-1">Show:</span>
+          <FilterButton filter="all" label="All" />
+          <FilterButton filter="Income" label="Income" />
+          <FilterButton filter="Growth" label="Growth" />
         </div>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search issuer, CUSIP, underlier..."
-          className="w-full rounded-lg border bg-white px-3 py-2 text-sm shadow-sm sm:w-96"
-        />
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-slate-600">
+            {asOfLabel ? (
+              <span>As-of: <span className="font-medium text-slate-800">{asOfLabel}</span></span>
+            ) : (
+              <span>As-of: <span className="font-medium text-slate-800">Unknown</span></span>
+            )}
+            <span className="ml-3 text-slate-400">|</span>
+            <span className="ml-3">{filtered.length} notes</span>
+          </div>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search issuer, CUSIP, underlier..."
+            className="w-full rounded-lg border bg-white px-3 py-2 text-sm shadow-sm sm:w-96"
+          />
+        </div>
       </div>
 
       <div className="mt-4 overflow-auto rounded-xl border bg-white shadow-sm">
@@ -201,6 +244,11 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
               <SortHeader field="coupon">Coupon</SortHeader>
               <th className="px-3 py-3">Market Coupon</th>
               <SortHeader field="cushion">Cushion</SortHeader>
+              <SortHeader field="score">
+                <span className="border-b border-dashed border-slate-400" title="0-100 score: higher = stronger swap candidate">
+                  Score
+                </span>
+              </SortHeader>
               <SortHeader field="recommendation">
                 <span className="border-b border-dashed border-slate-400" title="REVIEW = consider swapping, HOLD = keep position, N/A = no data">
                   Swap
@@ -227,6 +275,15 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
                 <td className="px-3 py-3 whitespace-nowrap">{fmtPct(r.couponPa)}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{fmtPct(r.marketCouponPa)}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{fmtPctAlready(r.principalCushionPct)}</td>
+                <td className="px-3 py-3 whitespace-nowrap">
+                  <span className={`font-medium ${
+                    r.swapScore >= 70 ? "text-amber-600" :
+                    r.swapScore >= 50 ? "text-slate-600" :
+                    "text-emerald-600"
+                  }`}>
+                    {r.swapScore}
+                  </span>
+                </td>
                 <td className="px-3 py-3">
                   <SwapBadge recommendation={r.swapRecommendation} isNearBarrier={r.isNearBarrier} />
                 </td>
@@ -237,7 +294,7 @@ export function ResultsTable({ results, asOfLabel }: { results: NoteResult[]; as
             ))}
             {!filtered.length && (
               <tr>
-                <td className="px-3 py-6 text-center text-slate-500" colSpan={11}>
+                <td className="px-3 py-6 text-center text-slate-500" colSpan={12}>
                   No matches.
                 </td>
               </tr>
